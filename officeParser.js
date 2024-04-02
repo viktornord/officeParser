@@ -57,25 +57,33 @@ const parseString = (xml) => {
  * @param {OfficeParserConfig} config   Config Object for officeParser
  * @returns {void}
  */
-function parseWord(filepath, callback, config) {
+function parseWord(file, callback, config) {
     /** The target content xml file for the docx file. */
     const mainContentFileRegex = /word\/document[\d+]?.xml/g;
     const footnotesFileRegex   = /word\/footnotes[\d+]?.xml/g;
     const endnotesFileRegex    = /word\/endnotes[\d+]?.xml/g;
+    
+    const isFilePathProcessing = typeof file === 'string';
+    if (isFilePathProcessing) {
+
+    }
     /** The decompress location which contains the filename in it */
     const decompressLocation = `${config.tempFilesLocation}/${filepath.split("/").pop()}`;
-    decompress(filepath,
+    const decompressPromise = isFilePathProcessing ?  decompress(file,
         decompressLocation,
         { filter: x => [mainContentFileRegex, footnotesFileRegex, endnotesFileRegex].some(fileRegex => x.path.match(fileRegex)) }
-    )
+    ) : decompress(file);
+    
+    decompressPromise
     .then(files => {
         // Verify if atleast the document xml file exists in the extracted files list.
-        if (!files.some(file => file.path.match(mainContentFileRegex)))
-            throw ERRORMSG.fileCorrupted(filepath);
+        if (!files.some(file => file.path.match(mainContentFileRegex))) {
+            throw ERRORMSG.fileCorrupted(filepath)
+        }
 
-            return files
-                .filter(file => file.path.match(mainContentFileRegex) || file.path.match(footnotesFileRegex) || file.path.match(endnotesFileRegex))
-                .map(file => fs.readFileSync(`${decompressLocation}/${file.path}`, 'utf8'));
+        return files
+            .filter(file => file.path.match(mainContentFileRegex) || file.path.match(footnotesFileRegex) || file.path.match(endnotesFileRegex))
+            .map(file => fs.readFileSync(`${decompressLocation}/${file.path}`, 'utf8'));
     })
     // ************************************* word xml files explanation *************************************
     // Structure of xmlContent of a word file is simple.
@@ -463,37 +471,40 @@ function parsePdf(filepath, callback, config) {
 function parseOffice(file, callback, config = {}) {
     // Make a clone of the config.
     const internalConfig = { ...config };
+    const isFilePathProcessing = typeof file === 'string';
     // Prepare file for processing
     const filePreparedPromise = new Promise((res, rej) => {
         // Check if decompress location in the config is present.
         // If it is valid, we set the final decompression location in the config.
         // If it is not valid, we reject the promise with appropriate error message.
-        if (!internalConfig.tempFilesLocation)
+        if (!internalConfig.tempFilesLocation) {
             internalConfig.tempFilesLocation = DEFAULTDECOMPRESSSUBLOCATION;
-        else {
-            if (!fs.existsSync(internalConfig.tempFilesLocation))
-            {
+        }
+        else if (isFilePathProcessing) {
+            if (!fs.existsSync(internalConfig.tempFilesLocation)) {
                 rej(ERRORMSG.locationNotFound(internalConfig.tempFilesLocation));
                 return;
             }
             internalConfig.tempFilesLocation = `${internalConfig.tempFilesLocation}${internalConfig.tempFilesLocation.endsWith('/') ? '' : '/'}${DEFAULTDECOMPRESSSUBLOCATION}`;
         }
+        if (isFilePathProcessing) {
+            // create temp file subdirectory if it does not exist
+            fs.mkdirSync(`${internalConfig.tempFilesLocation}/tempfiles`, { recursive: true });
+        }
 
-        // create temp file subdirectory if it does not exist
-        fs.mkdirSync(`${internalConfig.tempFilesLocation}/tempfiles`, { recursive: true });
 
         // Check if buffer
         if (Buffer.isBuffer(file)) {
             // Guess file type from buffer
             fileType.fromBuffer(file)
-                .then(data =>
-                {
+                .then(data => {
+                    const extension = data.ext.toLowerCase();
                     // temp file name
-                    const newfilepath = getNewFileName(internalConfig.tempFilesLocation, data.ext.toLowerCase());
+                    const newfilepath = getNewFileName(internalConfig.tempFilesLocation, extension);
                     // write new file
                     fs.writeFileSync(newfilepath, file);
                     // resolve promise
-                    res(newfilepath);
+                    res({ extension, file });
                 })
                 .catch(() => rej(ERRORMSG.improperBuffers));
             return;
@@ -502,41 +513,40 @@ function parseOffice(file, callback, config = {}) {
         // Not buffers but real file path.
 
         // Check if file exists
-        if (!fs.existsSync(file))
-            throw ERRORMSG.fileDoesNotExist(file);
+        if (!fs.existsSync(file)) {
+            throw ERRORMSG.fileDoesNotExist(file)
+        }
 
+        const extension = file.split(".").pop().toLowerCase();
         // temp file name
-        const newfilepath = getNewFileName(internalConfig.tempFilesLocation, file.split(".").pop().toLowerCase());
+        const newfilepath = getNewFileName(internalConfig.tempFilesLocation, extension);
         // Copy the file into a temp location with the temp name
         fs.copyFileSync(file, newfilepath)
         // resolve promise
-        res(newfilepath);
+        res({ extension, file: newfilepath });
     });
 
     // Process filePreparedPromise resolution.
     filePreparedPromise
-        .then(filepath => {
-            // File extension. Already in lowercase when we prepared the temp file above.
-            const extension = filepath.split(".").pop();
-
+        .then(({ file, extension }) => {
             // Switch between parsing functions depending on extension.
             switch(extension) {
                 case "docx":
-                    parseWord(filepath, internalCallback, internalConfig);
+                    parseWord(file, internalCallback, internalConfig);
                     break;
                 case "pptx":
-                    parsePowerPoint(filepath, internalCallback, internalConfig);
+                    parsePowerPoint(file, internalCallback, internalConfig);
                     break;
                 case "xlsx":
-                    parseExcel(filepath, internalCallback, internalConfig);
+                    parseExcel(file, internalCallback, internalConfig);
                     break;
                 case "odt":
                 case "odp":
                 case "ods":
-                    parseOpenOffice(filepath, internalCallback, internalConfig);
+                    parseOpenOffice(file, internalCallback, internalConfig);
                     break;
                 case "pdf":
-                    parsePdf(filepath, internalCallback, internalConfig);
+                    parsePdf(file, internalCallback, internalConfig);
                     break;
 
                 default:
